@@ -475,7 +475,7 @@
     (sq 7)
     })
 
-(define $TAG_false 0)
+(define $TAG_false 0) ; don't change this one. also, must have VALUE be ZERO
 (define $TAG_true 1)
 (define $TAG_null 2)
 (define $TAG_void 3)
@@ -487,18 +487,18 @@
 
 (define (get-stack-in x)
   (case x
-    [(const datum integer get-context get-ssa fake-global) 0]
+    [(const datum get-context get-ssa fake-global) 0]
     [(dup not to-boolean-tagged get-car get-cdr tag untag set-tag tag-eq assert-fixed tag-check put-ssa pop put-context) 1]
     [(put-slot equal make-pair swap math) 2]
-    [(label panic-fixed gotoif gotodyn goto panic) (void)]
+    [(label panic-fixed gotoif gotodyn goto panic sysexit) (void)]
     [(const-ssa reach-ssa) (void)] ; transient
     [else (error "no stack req for:" x)]))
 (define (get-stack-out x)
   (case x
     [(dup swap) 2]
-    [(not to-boolean-tagged get-car get-cdr tag untag set-tag tag-eq const make-pair datum integer get-context get-ssa fake-global equal math) 1]
+    [(not to-boolean-tagged get-car get-cdr tag untag set-tag tag-eq const make-pair datum get-context get-ssa fake-global equal math) 1]
     [(assert-fixed put-slot tag-check put-ssa pop put-context) 0]
-    [(label panic-fixed gotoif gotodyn goto panic) (void)]
+    [(label panic-fixed gotoif gotodyn goto panic sysexit) (void)]
     [(const-ssa reach-ssa) (void)] ; transient
     [else (error "no stack prod for:" x)]))
 (define (can-traverse? x)
@@ -510,20 +510,12 @@
 
 (define (optimize-once seq labels-used)
   (match seq
-    [(list-rest (list 'integer value) (list 'to-boolean-tagged) rest)
-     (if (= value 0)
-         (list* (list 'const $TAG_false 0) rest)
-         (list* (list 'const $TAG_true value) rest))]
     [(list-rest (list 'const tag value) (list 'to-boolean-tagged) rest)
-     (if (= tag $TAG_false)
+     (if (and (= tag $TAG_false) (= value 0))
          (list* (list 'const $TAG_false 0) rest)
          (list* (list 'const $TAG_true value) rest))]
-    [(list-rest (list 'integer value) (list 'not) rest)
-     (if (= value 0)
-         (list* (list 'const $TAG_true 1) rest)
-         (list* (list 'const $TAG_false 0) rest))]
-    [(list-rest (list 'const tag _) (list 'not) rest)
-     (if (= tag $TAG_false)
+    [(list-rest (list 'const tag value) (list 'not) rest)
+     (if (and (= tag $TAG_false) (= value 0))
          (list* (list 'const $TAG_true 1) rest)
          (list* (list 'const $TAG_false 0) rest))]
     [(list-rest (list 'to-boolean-tagged) (list 'tag) rest)
@@ -531,29 +523,31 @@
     [(list-rest (list 'to-boolean-tagged) (list 'dup) rest)
      (list* (list 'dup) (list 'to-boolean-tagged) (list 'swap) (list 'to-boolean-tagged) rest)]
     [(list-rest (and orig (cons (or 'tag 'equal 'tag-eq) _)) (list 'set-tag n) (list 'const n value) (list 'equal) rest)
-     (list* orig (list 'integer value) (list 'equal) rest)]
-    [(list-rest (list 'integer 0) (list 'equal) rest)
+     (list* orig (list 'const 0 value) (list 'equal) rest)] ; TODO: do we need this one?
+    [(list-rest (list 'const 0 0) (list 'equal) rest)
      (list* (list 'not) rest)]
     [(list-rest (list 'to-boolean-tagged) (list 'not) rest)
      (list* (list 'not) rest)]
+    [(list-rest (list 'not) (list 'not) rest)
+     (list* (list 'to-boolean-tagged) rest)]
     [(list-rest (list 'const tag1 value1) (list 'const tag2 value2) (list 'make-pair tag-out) rest)
      (list* (list 'const tag-out (list tag1 value1 tag2 value2)) rest)]
-    [(list-rest (list 'tag) (list 'integer n) (list 'equal) rest)
+    [(list-rest (list 'tag) (list 'const 0 n) (list 'equal) rest)
      (list* (list 'tag-eq n) rest)]
-    [(list-rest (and orig (cons (or 'panic 'panic-fixed 'goto) _)) (cons (not 'label) _) rest)
+    [(list-rest (and orig (cons (or 'panic 'panic-fixed 'goto 'sysexit) _)) (cons (not 'label) _) rest)
      (list* orig rest)]
     [(list-rest (and orig (cons (or 'const) _)) (list 'pop) rest)
      rest]
     [(list-rest (list 'const tag value) (list 'dup) rest)
      (list* (list 'const tag value) (list 'const tag value) rest)]
     [(list-rest (list 'const tag value) (list 'tag) rest)
-     (list* (list 'integer tag) rest)]
+     (list* (list 'const 0 tag) rest)]
     [(list-rest (list 'const tag value) (list 'untag) rest)
-     (list* (list 'integer value) rest)]
+     (list* (list 'const 0 value) rest)]
     [(list-rest (list 'const tag value) (list 'tag-eq n) rest)
      (if (= tag n)
-         (list* (list 'integer 1) rest)
-         (list* (list 'integer 0) rest))]
+         (list* (list 'const 0 1) rest)
+         (list* (list 'const 0 0) rest))]
     [(list-rest (list 'const tag value) (list 'tag-check (not tag) message) rest)
      (list* (list 'panic-fixed message) rest)]
     [(list-rest (list 'const tag value) (list 'tag-check tag message) rest)
@@ -568,25 +562,19 @@
      (list* (list 'const tag2 value2) rest)]
     [(list-rest (list 'const tag1 value1) (list 'const tag2 value2) (list 'equal) rest)
      (if (and (equal? tag1 tag2) (equal? value1 value2))
-         (list* (list 'integer 1) rest)
-         (list* (list 'integer 0) rest))]
-    [(list-rest (list 'integer value) (list 'integer value) (list 'equal) rest)
-     (list* (list 'integer 1) rest)]
-    [(list-rest (list 'integer value) (list 'set-tag tag) rest)
+         (list* (list 'const 0 1) rest)
+         (list* (list 'const 0 0) rest))]
+    [(list-rest (list 'const 0 value) (list 'set-tag tag) rest)
      (list* (list 'const tag value) rest)]
-    [(list-rest (list 'integer value) (list 'gotoif target) rest)
-     (if (= value 0)
-         rest
-         (list* (list 'goto target) rest))]
     [(list-rest (list 'const tag value) (list 'gotoif target) rest)
-     (if (= tag $TAG_false)
+     (if (and (= tag 0) (= value 0))
          rest
          (list* (list 'goto target) rest))]
     [(list-rest (list 'label (? (lambda (name) (not (set-member? labels-used name))) name)) rest)
      rest] ; unused label
     [(list-rest (list (or 'goto 'gotoif) label) (list 'label label) rest)
      (list* (list 'label label) rest)]
-    [(list-rest (list 'integer (? symbol? ptr)) (list 'gotodyn) rest)
+    [(list-rest (list 'const 0 (? symbol? ptr)) (list 'gotodyn) rest)
      (list* (list 'goto ptr) rest)]
     [(list-rest (list 'datum (and message (? string?))) (list 'panic) rest)
      (list* (list 'panic-fixed message) rest)]
@@ -609,7 +597,7 @@
      (displayln "const assist")
      (list* (list 'const tag value) (list 'const-ssa tag value ssa) rest)]
     [(list-rest (list 'const-ssa tag value ssa) (and orig (cons (not 'const-ssa) _)) rest)
-     (if (can-traverse? (car orig))
+     (if (or (can-traverse? (car orig)) (eq? (car orig) 'reach-ssa))
          (list* orig (list 'const-ssa tag value ssa) rest)
          (list* orig rest))]
     [(list (list 'const-ssa tag value ssa))
@@ -647,20 +635,19 @@
              rest)]
     [(list-rest (list 'const tag value) (list 'put-context) (and orig (cons (? not-contextual?) _)) rest)
      (list* orig (list 'const tag value) (list 'put-context) rest)]
-    [(list-rest (list 'integer (? symbol? ptr))
-                (and orig (cons (or 'const 'integer) _))
+    [(list-rest (list 'const 0 (? symbol? ptr))
+                (and orig (cons 'const _))
                 (list 'put-context)
                 (list 'gotodyn)
                 rest)
      (list* orig (list 'put-context) (list 'goto ptr) rest)]
-    [(list-rest (and cond (cons (or 'integer 'const) _))
-                (and orig (cons (or 'const 'integer) _))
+    [(list-rest (and cond (cons 'const _))
+                (and orig (cons 'const _))
                 (list 'put-context)
                 (list 'gotoif ptr)
                 rest)
-     (if (if (eq? (car cond) 'integer)
-             (= (cadr cond) 0)
-             (= (cadr cond) $TAG_false))
+     (if (and (= (cadr cond) $TAG_false)
+              (= (caddr cond) 0))
          (list* orig (list 'put-context) rest)
          (list* orig (list 'put-context) (list 'goto ptr) rest))]
     
@@ -701,7 +688,6 @@
              (get-label-refs (list 'const tag2 value2)))]
     [(list 'const-ssa tag value ssa)
      (get-label-refs (list 'const tag value))]
-    [(list 'integer (? symbol? ptr)) (list ptr)]
     [else empty]))
 (define (optimize seq nth [reordered-last #f])
   (when (hash-has-key? optimization-steps nth)
@@ -803,7 +789,7 @@
   (let ((skip (gensym "label")))
     (append (ix 'dup)
             (ix 'tag)
-            (ix 'integer tag)
+            (ix 'const 0 tag)
             (ix 'equal)
             (ix 'gotoif skip)
             (ix 'datum message)
@@ -838,7 +824,7 @@
                                           (compile-block args argname)
                                           (ix 'swap)
                                           (assert-is-tag $TAG_lambda "not a lambda!")
-                                          (ix 'integer ret)
+                                          (ix 'const 0 ret)
                                           (ix 'swap)
                                           (ix 'untag)
                                           (ix 'gotodyn)
@@ -886,17 +872,18 @@
                                     (ix 'panic))]
       [(list '$lookup name) (if (eq? name argname)
                                 (ix 'get-context) ; the argument
-                                (if (member name '(+ - * /))
+                                (if (member name '(+ - * / print))
                                     (ix 'const $TAG_lambda (string->symbol (string-append "global_" (symbol->string name))))
                                     (error "no such variable" name)))]))
   (let ((main (compile-lambda (gensym "ignored") block)))
     (pretty-print all-output)
     (optimize (append (ix 'const $TAG_null 0) ; argument
-                      (ix 'integer 'exit) ; return address
+                      (ix 'const 0 'exit) ; return address
                       (ix 'const $TAG_void 0) ; context
                       (ix 'put-context)
                       (ix 'goto main)
                       all-output
+                      ; *
                       (ix 'label 'global_*)    ; (...) ARGUMENT RETURN-ADDRESS
                       (ix 'swap)               ; (...) RETURN-ADDRESS ARGUMENT
                       (ix 'dup)                ; (...) RETURN-ADDRESS ARGUMENT ARGUMENT
@@ -907,7 +894,23 @@
                       (ix 'math '*)            ; (...) RETURN-ADDRESS (A*B)
                       (ix 'swap)               ; (...) (A*B) RETURN-ADDRESS
                       (ix 'gotodyn)            ; (...) (A*B) (and we're at the old address)
-                      ) 0)))
+                      ; exit
+                      (ix 'label 'exit)
+                      (ix 'const 0 0)
+                      (ix 'math 'debug_print)
+                      (ix 'pop)
+                      (ix 'const 0 0)
+                      (ix 'sysexit)
+                      ; print
+                      (ix 'label 'global_print)
+                      (ix 'swap)
+                      (ix 'get-car)
+                      (ix 'const 0 0)
+                      (ix 'math 'debug_print)
+                      (ix 'const $TAG_void 0)
+                      (ix 'gotodyn)
+                      )
+                      0)))
 
 (test-context code #f)
 (let ((output (test-context body #f)))
